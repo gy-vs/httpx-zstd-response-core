@@ -30,6 +30,7 @@ For information on configuring more complex SSL cases, please see the [SSL docum
 * Ensure `certifi` and `httpcore` are only imported if required. (#3377)
 * Treat `socks5h` as a valid proxy scheme. (#3178)
 * Cleanup `Request()` method signature in line with `client.request()` and `httpx.request()`. (#3378)
+* Bugfix: Handle empty `zstd` responses, returning `b""` rather than raising a `DecodingError`. (#3412)
 
 ## 0.27.2 (27th August, 2024)
 
