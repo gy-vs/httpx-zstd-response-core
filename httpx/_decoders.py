@@ -175,9 +175,13 @@ class ZStandardDecoder(ContentDecoder):
             ) from None
 
         self.decompressor = zstandard.ZstdDecompressor().decompressobj()
+        self.seen_data = False
 
     def decode(self, data: bytes) -> bytes:
         assert zstandard is not None
+        if not data:
+            return b""
+        self.seen_data = True
         output = io.BytesIO()
         try:
             output.write(self.decompressor.decompress(data))
@@ -190,9 +194,13 @@ class ZStandardDecoder(ContentDecoder):
         return output.getvalue()
 
     def flush(self) -> bytes:
+        if not self.seen_data:
+            # An empty response body is valid with 'Content-Encoding: zstd',
+            # such as with '204 No Content', HEAD, or some proxy responses.
+            return b""
         ret = self.decompressor.flush()  # note: this is a no-op
         if not self.decompressor.eof:
-            raise DecodingError("Zstandard data is incomplete")  # pragma: no cover
+            raise DecodingError("Zstandard data is incomplete")
         return bytes(ret)
 
 

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import io
+import subprocess
+import sys
 import typing
 import zlib
 
@@ -122,6 +124,69 @@ def test_zstd_multiframe():
     assert response.content == b"foobar"
 
 
+def test_zstd_empty_content():
+    # An empty response body is valid with 'Content-Encoding: zstd',
+    # such as with '204 No Content', HEAD, or some proxy responses.
+    headers = [(b"Content-Encoding", b"zstd")]
+
+    # Empty streaming content.
+    response = httpx.Response(200, headers=headers, content=iter([]))
+    assert response.read() == b""
+
+    response = httpx.Response(200, headers=headers, content=iter([b""]))
+    assert list(response.iter_bytes()) == []
+
+    # Empty content with multiple encodings applied.
+    headers = [(b"Content-Encoding", b"zstd, identity")]
+    response = httpx.Response(200, headers=headers, content=b"")
+    assert response.content == b""
+
+
+@pytest.mark.anyio
+async def test_zstd_empty_content_async():
+    headers = [(b"Content-Encoding", b"zstd")]
+
+    async def empty_stream() -> typing.AsyncIterator[bytes]:
+        yield b""
+
+    response = httpx.Response(200, headers=headers, content=empty_stream())
+    assert await response.aread() == b""
+
+
+def test_zstd_truncated():
+    # A truncated zstd frame is invalid, and must raise a 'DecodingError'
+    # rather than silently returning the partially decoded content.
+    body = b"Hello, world!" * 100
+    compressed_body = zstd.compress(body)
+    truncated_body = compressed_body[: len(compressed_body) // 2]
+
+    headers = [(b"Content-Encoding", b"zstd")]
+    with pytest.raises(httpx.DecodingError):
+        httpx.Response(200, headers=headers, content=truncated_body)
+
+    with pytest.raises(httpx.DecodingError):
+        response = httpx.Response(200, headers=headers, content=iter([truncated_body]))
+        response.read()
+
+
+def test_zstd_capability_detection_without_zstandard():
+    # When the 'zstandard' package is not installed, 'zstd' must be excluded
+    # from the supported decoders, and so from the default 'Accept-Encoding'
+    # header. Runs in a subprocess to simulate the missing optional dependency.
+    script = (
+        "import sys;"
+        "sys.modules['zstandard'] = None;"
+        "from httpx._decoders import SUPPORTED_DECODERS;"
+        "from httpx._client import ACCEPT_ENCODING;"
+        "assert 'zstd' not in SUPPORTED_DECODERS;"
+        "assert ACCEPT_ENCODING == 'gzip, deflate, br'"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True
+    )
+    assert result.returncode == 0, result.stderr
+
+
 def test_multi():
     body = b"test 123"
 
@@ -182,7 +247,9 @@ async def test_streaming():
     assert await response.aread() == body
 
 
-@pytest.mark.parametrize("header_value", (b"deflate", b"gzip", b"br", b"identity"))
+@pytest.mark.parametrize(
+    "header_value", (b"deflate", b"gzip", b"br", b"identity", b"zstd")
+)
 def test_empty_content(header_value):
     headers = [(b"Content-Encoding", header_value)]
     response = httpx.Response(
@@ -193,7 +260,9 @@ def test_empty_content(header_value):
     assert response.content == b""
 
 
-@pytest.mark.parametrize("header_value", (b"deflate", b"gzip", b"br", b"identity"))
+@pytest.mark.parametrize(
+    "header_value", (b"deflate", b"gzip", b"br", b"identity", b"zstd")
+)
 def test_decoders_empty_cases(header_value):
     headers = [(b"Content-Encoding", header_value)]
     response = httpx.Response(content=b"", status_code=200, headers=headers)
